@@ -24,7 +24,7 @@ registry = { path =  "../registry" }
 mail-parser = { version = "1.0", features = ["full_encoding"] } 
 mail-builder = { version = "2.0" }
 mail-auth = { version = "0.15.1", features = ["generate", "arc"] }
-tokio = { version = "1.54", features = ["rt"] }
+tokio = { version = "1.54", features = ["rt", "sync"] }
 hyper = { version = "1.12.0", features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1.21", features = ["tokio"] }
 http-body-util = "0.1.5"

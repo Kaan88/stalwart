@@ -2715,6 +2715,8 @@ dependencies = [
  "registry",
  "serde",
  "serde_json",
+ "store",
+ "tokio",
  "trc",
 ]
 

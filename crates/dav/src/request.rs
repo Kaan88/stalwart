@@ -48,7 +48,11 @@ use dav_proto::{
         },
     },
 };
-use http_proto::{HttpRequest, HttpResponse, HttpSessionData, request::fetch_body};
+use http_proto::{
+    HttpRequest, HttpResponse, HttpSessionData,
+    blob::{SpooledBody, spool_body},
+    request::fetch_body,
+};
 use hyper::{StatusCode, header};
 use registry::schema::enums::Permission;
 use std::{
@@ -65,6 +69,8 @@ use types::collection::{Collection, SyncCollection};
 const MAX_CONFLICT_RETRIES: u32 = 3;
 const CONFLICT_RETRY_BACKOFF_MS: RangeInclusive<u64> = 1..=15;
 const CONFLICT_RETRY_AFTER: u64 = 1;
+/// How long a stored PUT body stays held before a file node must link it.
+const STORED_BODY_HOLD: u64 = 3600;
 
 pub trait DavRequestHandler: Sync + Send {
     fn handle_dav_request(
@@ -590,7 +596,52 @@ impl DavRequestHandler for Server {
         resource: DavResourceName,
         method: DavMethod,
     ) -> HttpResponse {
-        let body = if method.has_body()
+        let mut stored_body = None;
+        let body = if resource == DavResourceName::File && matches!(method, DavMethod::PUT) {
+            // File uploads may be large: bodies over one chunk go straight to the blob store.
+            match spool_body(
+                &mut request,
+                if !access_token.has_permission(Permission::UnlimitedUploads) {
+                    self.core.groupware.max_file_size as u64
+                } else {
+                    0
+                },
+                self.blob_store(),
+                &self.core.blob.file,
+            )
+            .await
+            {
+                Ok(Some(SpooledBody::Memory(bytes))) => bytes,
+                Ok(Some(SpooledBody::Chunked(blob))) => {
+                    let size = blob.manifest.size;
+                    match self
+                        .commit_chunked_blob(access_token.account_id(), blob, STORED_BODY_HOLD)
+                        .await
+                    {
+                        Ok(blob_id) => {
+                            stored_body = Some((blob_id.hash, size));
+                            Vec::new()
+                        }
+                        Err(err) => {
+                            trc::error!(err.span_id(session.session_id));
+                            return HttpResponse::new(StatusCode::INTERNAL_SERVER_ERROR);
+                        }
+                    }
+                }
+                Ok(None) => {
+                    trc::event!(
+                        Limit(trc::LimitEvent::SizeRequest),
+                        SpanId = session.session_id,
+                        Contents = "File too large",
+                    );
+                    return HttpResponse::new(StatusCode::PAYLOAD_TOO_LARGE);
+                }
+                Err(err) => {
+                    trc::error!(err.span_id(session.session_id));
+                    return HttpResponse::new(StatusCode::BAD_REQUEST);
+                }
+            }
+        } else if method.has_body()
             || request
                 .headers()
                 .get(header::CONTENT_LENGTH)
@@ -647,6 +698,7 @@ impl DavRequestHandler for Server {
         if let Some(destination) = canonical_destination.as_deref() {
             headers.destination = Some(destination);
         }
+        headers.stored_body = stored_body;
 
         let start_time = Instant::now();
         let mut retries = 0;

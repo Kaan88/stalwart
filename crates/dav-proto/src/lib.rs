@@ -52,6 +52,8 @@ pub struct RequestHeaders<'x> {
     pub if_: Vec<If<'x>>,
     pub range: Option<ByteRange>,
     pub if_range: Option<&'x str>,
+    /// A PUT body too large for memory, already in the blob store (hash, size).
+    pub stored_body: Option<(types::blob_hash::BlobHash, u64)>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]

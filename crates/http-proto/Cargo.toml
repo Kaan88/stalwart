@@ -5,6 +5,8 @@ edition = "2024"
 
 [dependencies]
 common = { path = "../common" }
+store = { path = "../store" }
+tokio = { version = "1.54", features = ["sync", "rt"] }
 trc = { path = "../trc" }
 registry = { path = "../registry" }
 serde = { version = "1.0", features = ["derive"]}

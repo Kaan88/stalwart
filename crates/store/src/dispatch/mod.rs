@@ -8,6 +8,7 @@ use crate::Store;
 use roaring::RoaringBitmap;
 
 pub mod blob;
+pub mod blob_chunked;
 pub mod lookup;
 pub mod search;
 pub mod store;
