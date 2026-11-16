@@ -65,8 +65,21 @@ Requests take a JSON body. Use the same credentials as JMAP; an OAuth token need
 | `limits` | `{}` | `{"defaultExpiresIn", "minExpiresIn", "maxExpiresIn", "maxLinksPerFile"}` |
 
 - **Fields.** `fileId` is the JMAP FileNode id. `accountId` is optional and defaults to your own account. Times are Unix seconds.
+- **Checking the file.** `expectName` and `expectSize` are optional. When given, the request is refused (400) unless the file has that name and size. A client that cannot tell which account a node is in sends them, since node ids repeat between accounts.
 - **URL.** `url` is built from the request's `Host` header. It uses `https` when the connection is TLS or `X-Forwarded-Proto` says `https`. A client that knows the server's address can use `path` instead.
 - **Permissions.** `create` and `revoke` need the `JmapFileNodeUpdate` permission; `list` needs `JmapFileNodeGet`.
+
+### Bulwark plugin
+
+`bulwark-plugin/share-link/` holds a Bulwark plugin. It adds **Get public link** to a file's menu in Files, and its dialog makes, copies and revokes links. It needs a proxy rule that sends `/api/sharelink/` and `/s/` on the webmail's address to Stalwart; its README explains that and how to install it.
+
+It was checked in a production build of Bulwark 1.21.2, run behind such a proxy, against a local server:
+
+- The menu entry appears.
+- The dialog lists the file's links and makes a new one, which is copied to the clipboard.
+- The link downloads the whole 20 MiB file.
+- Revoke in the dialog makes the link answer 404.
+- A folder gets a message instead of a dialog.
 
 ## Where the code is
 

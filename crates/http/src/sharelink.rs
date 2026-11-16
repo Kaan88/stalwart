@@ -194,6 +194,12 @@ struct LinkRequest {
     link_id: Option<String>,
     /// Seconds until the link expires, for `create`.
     expires_in: Option<u64>,
+    /// When given, the file must have this name and size, or the request is
+    /// refused. Clients that cannot tell which account a node is in (ids
+    /// repeat between accounts) send them so a link is never made, listed
+    /// or revoked for a different file.
+    expect_name: Option<String>,
+    expect_size: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -295,7 +301,7 @@ pub async fn handle_share_api(
         "create" => {
             access_token.enforce_permission(Permission::JmapFileNodeUpdate)?;
             let document_id = file_id.ok_or_else(|| bad_request("fileId is required."))?;
-            ensure_file(server, account_id, document_id).await?;
+            ensure_file(server, account_id, document_id, &request).await?;
 
             let mut links = file_share_links(server, account_id, document_id).await?;
             let now = now();
@@ -318,6 +324,9 @@ pub async fn handle_share_api(
         "list" => {
             access_token.enforce_permission(Permission::JmapFileNodeGet)?;
             let document_id = file_id.ok_or_else(|| bad_request("fileId is required."))?;
+            if request.expect_name.is_some() || request.expect_size.is_some() {
+                ensure_file(server, account_id, document_id, &request).await?;
+            }
             let now = now();
             let links = file_share_links(server, account_id, document_id)
                 .await?
@@ -330,6 +339,9 @@ pub async fn handle_share_api(
         "revoke" => {
             access_token.enforce_permission(Permission::JmapFileNodeUpdate)?;
             let document_id = file_id.ok_or_else(|| bad_request("fileId is required."))?;
+            if request.expect_name.is_some() || request.expect_size.is_some() {
+                ensure_file(server, account_id, document_id, &request).await?;
+            }
             let link_id = request
                 .link_id
                 .as_deref()
@@ -348,7 +360,12 @@ pub async fn handle_share_api(
     }
 }
 
-async fn ensure_file(server: &Server, account_id: u32, document_id: u32) -> trc::Result<()> {
+async fn ensure_file(
+    server: &Server,
+    account_id: u32,
+    document_id: u32,
+    request: &LinkRequest,
+) -> trc::Result<()> {
     let node_ = server
         .store()
         .get_value::<Archive<ArchiveBytes>>(ValueKey::archive(
@@ -360,11 +377,22 @@ async fn ensure_file(server: &Server, account_id: u32, document_id: u32) -> trc:
         .caused_by(trc::location!())?
         .ok_or_else(|| trc::ResourceEvent::NotFound.into_err())?;
     let node = node_.unarchive::<FileNode>().caused_by(trc::location!())?;
-    if node.file().is_some() {
-        Ok(())
-    } else {
-        Err(bad_request("Only files can be shared by link."))
+    let Some(file) = node.file() else {
+        return Err(bad_request("Only files can be shared by link."));
+    };
+    if request
+        .expect_name
+        .as_deref()
+        .is_some_and(|name| name != node.name.as_str())
+        || request
+            .expect_size
+            .is_some_and(|size| size != u64::from(u32::from(file.size)))
+    {
+        return Err(bad_request(
+            "The file does not match; links can only be made for your own files.",
+        ));
     }
+    Ok(())
 }
 
 #[cfg(test)]
