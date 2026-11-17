@@ -32,6 +32,16 @@
 
 This fork adds two things to Stalwart: big files (stored in chunks and streamed) and public share links for files. The Docker image is `ghcr.io/kaan88/stalwart:arm64`. [FORK.md](FORK.md) describes the features, the settings to raise and the known limits.
 
+### Share links in Bulwark (plugin)
+
+Stalwart's own web admin has no screen for share links. [`bulwark-plugin/share-link/`](bulwark-plugin/share-link/) is a plugin for the Bulwark webmail that adds **Get public link** to a file's menu, with Copy and Revoke and links valid for 1 day, 7 days, 30 days or 1 year.
+
+1. Zip it: `cd bulwark-plugin/share-link && zip ../share-link.zip manifest.json index.js`
+2. In Bulwark's admin console, open **Plugins**, upload the zip and enable it. Plugins must be allowed in Bulwark's policy.
+3. Route two paths **on Bulwark's address** to Stalwart: `/api/sharelink/` and `/s/`. The plugin calls Bulwark's own address, not Stalwart's, so without these routes it reports "This server has no share links (404)". With a Cloudflare tunnel, add a route on Bulwark's hostname with the path `^/(api/sharelink/|s/)` pointing at Stalwart.
+
+The plugin's [README](bulwark-plugin/share-link/README.md) has Caddy and nginx examples and the limits (files only, your own files only).
+
 ### Maintenance tools: report, convert, nuke
 
 These tools are not in the web admin or its task list on purpose. They run from the command line while the server is stopped. `convert` and `nuke` rewrite and delete blobs, so nothing else may write to the data while they run. Each tool does its job and exits without starting the server.
