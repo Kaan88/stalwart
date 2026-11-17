@@ -71,6 +71,17 @@ async fn async_main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
+    // Offline fork tools (report, convert, nuke): run against the stopped data
+    // store and exit before any service or listener starts.
+    if let Ok(tool) = std::env::var("STALWART_FORK_TOOL") {
+        let server = init.inner.build_server();
+        return if services::fork_tools::run_fork_tool(&server, tool.trim()).await {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        };
+    }
+
     // Init services
     init.start_services().await;
     init.start_queue_manager();

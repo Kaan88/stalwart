@@ -81,6 +81,30 @@ It was checked in a production build of Bulwark 1.21.2, run behind such a proxy,
 - Revoke in the dialog makes the link answer 404.
 - A folder gets a message instead of a dialog.
 
+## Going back to official Stalwart
+
+Official Stalwart can't read the fork's chunked blobs or share links, and it never shows them either. To move a server back, stop it and run one of these tools with the fork's binary:
+
+```bash
+STALWART_FORK_TOOL=report  stalwart --config=/etc/stalwart/config.json   # what is fork-only
+STALWART_FORK_TOOL=convert stalwart --config=/etc/stalwart/config.json   # keep everything
+STALWART_FORK_TOOL=nuke    stalwart --config=/etc/stalwart/config.json   # delete the big files instead
+```
+
+- **`report`** lists every chunked blob and what uses it, and counts the fork-only records.
+- **`convert`** rewrites every chunked blob as an ordinary blob, checking its hash first, and deletes all share links. Every file and mail stays.
+- **`nuke`** deletes the files stored in chunks, the same way their owner deleting them would (quota, change log). Mail with a big blob is converted, not deleted.
+
+Both `convert` and `nuke`:
+
+- **End with a check.** They finish with the `report` counts, which must be zero; then the official binary can be started on the same data.
+- **Do nothing the second time.** A repeat run finds nothing left to change.
+- **Survive interruption.** A run that was killed or ran out of disk is finished by the next run.
+- **Respect a memory limit.** `convert` holds one blob in memory while it rewrites it. A blob larger than `STALWART_FORK_MAX_MEMORY` (default `1G`) is refused and reported.
+- **Need extra disk while they run.** A rewritten blob exists both whole and in chunks until its chunks are deleted, and RocksDB frees the space only when it compacts.
+
+`tests/fork-compat/` checks all of this against official Stalwart v1.1.1 on RocksDB; see its README.
+
 ## Where the code is
 
 New files, all AGPL-3.0-only:
@@ -90,6 +114,8 @@ New files, all AGPL-3.0-only:
 - `crates/http-proto/src/blob.rs`: streaming request and response bodies
 - `crates/groupware/src/file/share_link.rs`: link storage and tokens
 - `crates/http/src/sharelink.rs`: the `/s/` and `/api/sharelink` handlers
+- `crates/services/src/fork_tools.rs`: `report`, `convert` and `nuke`; started from `crates/main/src/main.rs`
+- `tests/fork-compat/`: the compatibility test and its read-only RocksDB checker
 
 Small hooks in upstream files:
 

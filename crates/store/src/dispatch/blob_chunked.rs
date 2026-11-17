@@ -308,6 +308,17 @@ impl BlobStore {
             .and_then(|raw| ChunkManifest::parse(&raw)))
     }
 
+    /// Deletes the chunks of `manifest`, stopping at the first error. Deleting a
+    /// chunk that is already gone is not an error.
+    pub async fn delete_chunks(&self, manifest: &ChunkManifest) -> trc::Result<()> {
+        for index in 0..manifest.chunk_count {
+            self.delete_blob(&manifest.chunk_key(index))
+                .await
+                .caused_by(trc::location!())?;
+        }
+        Ok(())
+    }
+
     /// Deletes a chunked blob: its chunks first, then the manifest. A blob that
     /// turns out not to be chunked is deleted as it is.
     pub async fn delete_chunked_blob(&self, key: &[u8]) -> trc::Result<()> {

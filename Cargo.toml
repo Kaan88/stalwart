@@ -37,6 +37,7 @@ members = [
     "crates/jmap-tools",
     "crates/s3",
     "crates/crypto",
+    "tests/fork-compat/inspect",
 ]
 default-members = [
     "crates/main",
