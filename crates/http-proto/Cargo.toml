@@ -1,12 +1,12 @@
 [package]
 name = "http_proto"
-version = "1.1.1"
+version = "1.2.0"
 edition = "2024"
 
 [dependencies]
 common = { path = "../common" }
 store = { path = "../store" }
-tokio = { version = "1.54", features = ["sync", "rt"] }
+tokio = { version = "1.54", features = ["sync", "rt", "time"] }
 trc = { path = "../trc" }
 registry = { path = "../registry" }
 serde = { version = "1.0", features = ["derive"]}

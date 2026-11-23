@@ -29,6 +29,7 @@ pub mod batch;
 pub mod blob;
 pub mod blob_chunked;
 pub mod chunk;
+pub mod create_lock;
 pub mod dav;
 pub mod document;
 pub mod encryption;
