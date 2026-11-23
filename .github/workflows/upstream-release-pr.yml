@@ -59,10 +59,22 @@ jobs:
               --jq '.[0] | if . then [.number,.state] | @tsv else empty end')
             if [[ -z "$pr" ]]; then
               if [[ -z "$(git ls-remote --heads origin "refs/heads/$branch")" ]]; then
-                if ! gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" \
-                  -f ref="refs/heads/$branch" -f sha="$release" --silent; then
-                  git push origin "$release:refs/heads/$branch"
-                fi
+                # GITHUB_TOKEN cannot create or update anything under
+                # .github/workflows. Push a child of the release whose
+                # workflow files are main's, so the release stays an ancestor
+                # and the PR carries no workflow changes.
+                index=$(mktemp -u)
+                GIT_INDEX_FILE="$index" git read-tree "$release"
+                GIT_INDEX_FILE="$index" git rm -r -q --cached --ignore-unmatch -- .github/workflows
+                git ls-tree -r "$base" -- .github/workflows |
+                  GIT_INDEX_FILE="$index" git update-index --index-info
+                tree=$(GIT_INDEX_FILE="$index" git write-tree)
+                rm -f "$index"
+                head_commit=$(git -c user.name=github-actions[bot] \
+                  -c user.email=41898282+github-actions[bot]@users.noreply.github.com \
+                  commit-tree "$tree" -p "$release" \
+                  -m "Upstream $tag without .github/workflows changes")
+                git push origin "$head_commit:refs/heads/$branch"
               fi
               number=$(gh api -X POST "repos/$GITHUB_REPOSITORY/pulls" \
                 -f title="Merge upstream $tag" -f base=main -f head="$branch" \
