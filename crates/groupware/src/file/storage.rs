@@ -4,14 +4,14 @@
  * SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-SEL
  */
 
-use super::{ArchivedFileNode, FileNode};
+use super::{ArchivedFileNode, FileNode, share_link::SHARE_LINKS_FIELD};
 use crate::DestroyArchive;
 use common::{
     Server,
     auth::ChangedBy,
     storage::{batch::MAX_BATCH_DOCUMENTS, index::ObjectIndexBuilder, metadata::ContainerCleanup},
 };
-use store::write::{Archive, BatchBuilder, PendingId, Slot, now};
+use store::write::{Archive, BatchBuilder, PendingId, Slot, ValueClass, now};
 use trc::AddContext;
 use types::collection::{Collection, VanishedCollection};
 
@@ -175,11 +175,12 @@ impl DestroyArchive<Archive<&ArchivedFileNode>> {
             )
             .await?;
 
-        // Prepare write batch
+        // Prepare write batch (share links go with the file)
         batch
             .with_account_id(account_id)
             .with_collection(Collection::FileNode)
             .with_document(document_id)
+            .clear(ValueClass::Property(SHARE_LINKS_FIELD))
             .custom(
                 ObjectIndexBuilder::<_, ()>::new()
                     .with_current(self.0)
@@ -261,9 +262,10 @@ impl DestroyArchive<Vec<u32>> {
                     )
                     .await?;
 
-                // Delete record
+                // Delete record (share links go with the file)
                 batch
                     .with_document(document_id)
+                    .clear(ValueClass::Property(SHARE_LINKS_FIELD))
                     .custom(
                         ObjectIndexBuilder::<_, ()>::new()
                             .with_changed_by(changed_by)

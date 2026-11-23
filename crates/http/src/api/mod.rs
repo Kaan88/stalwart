@@ -124,6 +124,34 @@ impl ManagementApi for Server {
                     Err(trc::ResourceEvent::NotFound.into_err())
                 }
             }
+            "sharelink" if is_post => {
+                // Authenticate request
+                let HttpAuthenticated {
+                    in_flight: _in_flight,
+                    access_token,
+                    ..
+                } = self.authenticate_headers(req, session).await?;
+                let origin = request_origin(req, session);
+                let is_https = origin.is_tls
+                    || req
+                        .headers()
+                        .get("x-forwarded-proto")
+                        .and_then(|v| v.to_str().ok())
+                        .is_some_and(|v| v.eq_ignore_ascii_case("https"));
+                let base_url = format!(
+                    "{}://{}",
+                    if is_https { "https" } else { "http" },
+                    origin.authority
+                );
+                crate::sharelink::handle_share_api(
+                    self,
+                    path.get(1).copied().unwrap_or_default(),
+                    body,
+                    access_token,
+                    &base_url,
+                )
+                .await
+            }
             "account" => {
                 // Authenticate request
                 let HttpAuthenticated {

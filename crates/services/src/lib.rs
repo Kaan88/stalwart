@@ -17,6 +17,7 @@ use state_manager::manager::spawn_push_router;
 use std::sync::Arc;
 
 pub mod broadcast;
+pub mod fork_tools;
 pub mod index_queue;
 pub mod state_manager;
 pub mod task_manager;

@@ -28,6 +28,48 @@
   <a href="https://www.reddit.com/r/stalwartlabs/"><img src="https://img.shields.io/reddit/subreddit-subscribers/stalwartlabs?label=%2Fr%2Fstalwartlabs&logo=reddit&style=flat-square" alt="Reddit"></a>
 </p>
 
+## About this fork
+
+This fork adds two things to Stalwart: big files (stored in chunks and streamed) and public share links for files. The Docker image is `ghcr.io/kaan88/stalwart:arm64`. [FORK.md](FORK.md) describes the features, the settings to raise and the known limits.
+
+### Share links in Bulwark (plugin)
+
+Stalwart's own web admin has no screen for share links. [`bulwark-plugin/share-link/`](bulwark-plugin/share-link/) is a plugin for the Bulwark webmail that adds **Get public link** to a file's menu, with Copy and Revoke and links valid for 1 day, 7 days, 30 days or 1 year.
+
+1. Zip it: `cd bulwark-plugin/share-link && zip ../share-link.zip manifest.json index.js`
+2. In Bulwark's admin console, open **Plugins**, upload the zip and enable it. Plugins must be allowed in Bulwark's policy.
+3. Route two paths **on Bulwark's address** to Stalwart: `/api/sharelink/` and `/s/`. The plugin calls Bulwark's own address, not Stalwart's, so without these routes it reports "This server has no share links (404)". With a Cloudflare tunnel, add a route on Bulwark's hostname with the path `^/(api/sharelink/|s/)` pointing at Stalwart.
+
+The plugin's [README](bulwark-plugin/share-link/README.md) has Caddy and nginx examples and the limits (files only, your own files only).
+
+### Maintenance tools: report, convert, nuke
+
+These tools are not in the web admin or its task list on purpose. They run from the command line while the server is stopped. `convert` and `nuke` rewrite and delete blobs, so nothing else may write to the data while they run. Each tool does its job and exits without starting the server.
+
+- **`report`** (read-only) lists every chunked blob and what uses it, and counts the fork-only records. It is safe to run at any time.
+- **`convert`** rewrites every chunked blob as an ordinary blob and deletes all share links. Every file and mail stays.
+- **`nuke`** deletes the files stored in chunks, the same way their owner deleting them would. Mail with a big blob is converted, not deleted.
+
+`convert` and `nuke` are only needed before going back to official Stalwart. Both end with the `report` counts, which must be zero. A second run does nothing, and a run that was interrupted is finished by the next one.
+
+With Docker Compose (use your service's name in place of `stalwart`):
+
+```bash
+docker compose stop stalwart
+docker compose run --rm -e STALWART_FORK_TOOL=report  stalwart   # what is fork-only
+docker compose run --rm -e STALWART_FORK_TOOL=convert stalwart   # keep everything
+docker compose run --rm -e STALWART_FORK_TOOL=nuke    stalwart   # delete the big files instead
+docker compose start stalwart
+```
+
+Without Docker:
+
+```bash
+STALWART_FORK_TOOL=report stalwart --config=/etc/stalwart/config.json
+```
+
+`convert` holds one blob in memory at a time and refuses any blob larger than `STALWART_FORK_MAX_MEMORY` (default `1G`); raise it with `-e STALWART_FORK_MAX_MEMORY=4G`. While they run, both tools need extra disk space: a rewritten blob exists both whole and in chunks until its chunks are deleted. See "Going back to official Stalwart" in [FORK.md](FORK.md).
+
 ## Features
 
 **Stalwart** is an open-source mail & collaboration server with JMAP, IMAP4, POP3, SMTP, CalDAV, CardDAV, WebDAV and Microsoft Exchange support and a wide range of modern features. It is written in Rust and designed to be secure, fast, robust and scalable.

@@ -2177,6 +2177,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
+name = "fork-compat-inspect"
+version = "0.1.0"
+dependencies = [
+ "rocksdb",
+]
+
+[[package]]
 name = "form-data"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2830,6 +2837,7 @@ dependencies = [
  "registry",
  "serde",
  "serde_json",
+ "store",
  "tokio",
  "trc",
 ]

@@ -15,7 +15,7 @@ use crate::{
 use common::{Server, auth::AccessToken, storage::dav::FILE_DEFAULT_MEDIA_TYPE};
 use dav_proto::{RequestHeaders, schema::property::Rfc1123DateTime};
 use groupware::{cache::GroupwareCache, file::FileNode};
-use http_proto::HttpResponse;
+use http_proto::{HttpResponse, blob::chunked_body};
 use hyper::StatusCode;
 use store::{
     ValueKey,
@@ -155,6 +155,33 @@ impl FileGetRequestHandler for Server {
 
         if is_head {
             return Ok(response.with_content_length(size));
+        }
+
+        // Chunked (large) files are streamed one chunk at a time.
+        if let Some(manifest) = self
+            .chunk_manifest(&hash)
+            .await
+            .caused_by(trc::location!())?
+        {
+            let total = manifest.size;
+            let range = byte_range
+                .clone()
+                .map_or(0..total, |r| r.start as u64..(r.end as u64).min(total));
+            let response = if byte_range.is_some() {
+                response
+                    .with_status_code(StatusCode::PARTIAL_CONTENT)
+                    .with_content_range(format!(
+                        "bytes {}-{}/{}",
+                        range.start,
+                        range.end.saturating_sub(1),
+                        total
+                    ))
+            } else {
+                response
+            };
+            return Ok(response
+                .with_content_length((range.end - range.start) as usize)
+                .with_stream_body(chunked_body(self.clone(), manifest, range, None)));
         }
 
         let contents = self

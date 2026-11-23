@@ -140,6 +140,10 @@ impl<'x> BlobRecoder<'x> {
         else {
             return Ok(RecodeResult::Skipped);
         };
+        // Chunked blobs keep their chunks as written; the manifest is not encoded.
+        if store::dispatch::blob_chunked::ChunkManifest::parse(&raw).is_some() {
+            return Ok(RecodeResult::Skipped);
+        }
         let current = BlobFormat::of(&raw);
         let (current_compression, current_key_id) = current
             .map_or((CompressionAlgo::None, None), |format| {

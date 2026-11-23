@@ -47,7 +47,10 @@ use exchange::{
 use groupware::DavResourceName;
 use http_proto::{
     DownloadResponse, HttpContext, HttpRequest, HttpResponse, HttpResponseBody, HttpSessionData,
-    JsonProblemResponse, ToHttpResponse, form_urlencoded, request::fetch_body,
+    JsonProblemResponse, ToHttpResponse,
+    blob::{SpooledBody, serve_chunked, spool_body},
+    form_urlencoded,
+    request::fetch_body,
 };
 use hyper::{
     Method, StatusCode,
@@ -68,7 +71,10 @@ use jmap::{
         request::RequestHandler,
         session::{SessionHandler, allowed_capabilities},
     },
-    blob::{download::BlobDownload, upload::BlobUpload},
+    blob::{
+        download::{BlobAccess, BlobDownload},
+        upload::BlobUpload,
+    },
     websocket::upgrade::WebSocketUpgrade,
 };
 use jmap_proto::request::{Request, capability::Session};
@@ -84,7 +90,10 @@ use std::{str::FromStr, sync::Arc};
 use store::dispatch::lookup::KeyValue;
 use telemetry::prometheus::negotiate::negotiate;
 use trc::SecurityEvent;
-use types::{blob::BlobId, id::Id};
+use types::{
+    blob::{BlobClass, BlobId},
+    id::Id,
+};
 
 static RSVP_PAGE: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -216,20 +225,49 @@ impl ParseHttp for Server {
                             path.next().and_then(BlobId::from_base32),
                             path.next(),
                         ) {
+                            let content_type = req
+                                .uri()
+                                .query()
+                                .and_then(|q| {
+                                    form_urlencoded::parse(q.as_bytes())
+                                        .find(|(k, _)| k == "accept")
+                                        .map(|(_, v)| v.into_owned())
+                                })
+                                .unwrap_or("application/octet-stream".to_string());
+
+                            // Chunked (large) blobs are streamed, with range support.
+                            if blob_id.section.is_none()
+                                && !matches!(blob_id.class, BlobClass::Embedded { .. })
+                                && let Some(manifest) = self.chunk_manifest(&blob_id.hash).await?
+                            {
+                                return match self.has_access_blob(&blob_id, &access_token).await? {
+                                    BlobAccess::Allowed { .. } => Ok(serve_chunked(
+                                        self.clone(),
+                                        manifest,
+                                        req.headers()
+                                            .get(hyper::header::RANGE)
+                                            .and_then(|v| v.to_str().ok()),
+                                        HttpResponse::new(StatusCode::OK)
+                                            .with_content_type(content_type)
+                                            .with_content_disposition(format!(
+                                                "attachment; filename=\"{}\"",
+                                                name.replace('\"', "\\\"")
+                                            ))
+                                            .with_cache_control(
+                                                "private, immutable, max-age=31536000",
+                                            ),
+                                        None,
+                                    )),
+                                    _ => Err(trc::ResourceEvent::NotFound.into_err()),
+                                };
+                            }
+
                             return match self.blob_contents(&blob_id, &access_token).await? {
                                 Some(contents) => {
                                     let (prefix, blob) = contents.into_http_parts()?;
                                     Ok(DownloadResponse {
                                         filename: name.to_string(),
-                                        content_type: req
-                                            .uri()
-                                            .query()
-                                            .and_then(|q| {
-                                                form_urlencoded::parse(q.as_bytes())
-                                                    .find(|(k, _)| k == "accept")
-                                                    .map(|(_, v)| v.into_owned())
-                                            })
-                                            .unwrap_or("application/octet-stream".to_string()),
+                                        content_type,
                                         prefix,
                                         blob,
                                     }
@@ -252,25 +290,35 @@ impl ParseHttp for Server {
                         if let Some(account_id) = path.next().and_then(|p| Id::from_str(p).ok()) {
                             access_token.assert_is_member(account_id)?;
 
-                            return match fetch_body(
+                            // Large bodies are written to the blob store in chunks as they arrive.
+                            let body = spool_body(
                                 &mut req,
                                 if !access_token.has_permission(Permission::UnlimitedUploads) {
-                                    self.core.jmap.upload_max_size
+                                    self.core.jmap.upload_max_size as u64
                                 } else {
                                     0
                                 },
-                                session.session_id,
+                                self.blob_store(),
+                                &self.core.blob.email,
                             )
-                            .await
-                            {
-                                Some(bytes) => Ok(self
-                                    .blob_upload(
+                            .await?;
+                            let content_type = req
+                                .headers()
+                                .get(CONTENT_TYPE)
+                                .and_then(|h| h.to_str().ok())
+                                .unwrap_or("application/octet-stream")
+                                .to_string();
+
+                            return match body {
+                                Some(SpooledBody::Memory(bytes)) => Ok(self
+                                    .blob_upload(account_id, &content_type, &bytes, &access_token)
+                                    .await?
+                                    .into_http_response()),
+                                Some(SpooledBody::Chunked(blob)) => Ok(self
+                                    .blob_upload_chunked(
                                         account_id,
-                                        req.headers()
-                                            .get(CONTENT_TYPE)
-                                            .and_then(|h| h.to_str().ok())
-                                            .unwrap_or("application/octet-stream"),
-                                        &bytes,
+                                        &content_type,
+                                        blob,
                                         &access_token,
                                     )
                                     .await?
@@ -744,6 +792,13 @@ impl ParseHttp for Server {
                         });
                 }
             }
+            "s" => {
+                // Public share link (no sign-in)
+                if let Some(token) = path.next().filter(|token| !token.is_empty()) {
+                    return crate::sharelink::handle_share_download(self, &req, &session, token)
+                        .await;
+                }
+            }
             "robots.txt" => {
                 // Limit anonymous requests
                 self.is_http_anonymous_request_allowed(session.remote_ip)
@@ -1037,7 +1092,7 @@ async fn handle_session<T: SessionStream>(inner: Arc<Inner>, session: SessionDat
                                 trc::event!(
                                     Http(trc::HttpEvent::RequestUrl),
                                     SpanId = session.session_id,
-                                    Url = req.uri().to_compact_string(),
+                                    Url = crate::sharelink::loggable_url(req.uri()),
                                 );
 
                                 session.remote_ip
@@ -1047,7 +1102,7 @@ async fn handle_session<T: SessionStream>(inner: Arc<Inner>, session: SessionDat
                                     Http(trc::HttpEvent::RequestUrl),
                                     SpanId = session.session_id,
                                     RemoteIp = forwarded_for,
-                                    Url = req.uri().to_compact_string(),
+                                    Url = crate::sharelink::loggable_url(req.uri()),
                                 );
 
                                 forwarded_for
@@ -1056,7 +1111,7 @@ async fn handle_session<T: SessionStream>(inner: Arc<Inner>, session: SessionDat
                                 trc::event!(
                                     Http(trc::HttpEvent::RequestUrl),
                                     SpanId = session.session_id,
-                                    Url = req.uri().to_compact_string(),
+                                    Url = crate::sharelink::loggable_url(req.uri()),
                                 );
 
                                 session.remote_ip

@@ -40,6 +40,7 @@ members = [
     "crates/s3",
     "crates/crypto",
     "crates/fdb",
+    "tests/fork-compat/inspect",
 ]
 default-members = [
     "crates/main",

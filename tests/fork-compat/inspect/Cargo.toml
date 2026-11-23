@@ -1,0 +1,16 @@
+[package]
+name = "fork-compat-inspect"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Read-only checker for the fork-compatibility tests: counts fork-only records in a RocksDB data store without using the fork's code."
+
+[[bin]]
+name = "inspect"
+path = "src/main.rs"
+
+[dependencies]
+rocksdb = { version = "0.25", features = ["multi-threaded-cf"] }
+
+[lints]
+workspace = true

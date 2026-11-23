@@ -6,6 +6,7 @@
 
 #![warn(clippy::large_futures)]
 
+pub mod blob;
 pub mod body;
 pub mod context;
 pub mod request;

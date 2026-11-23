@@ -75,7 +75,13 @@ impl FileUpdateRequestHandler for Server {
             .resource
             .ok_or(DavError::Code(StatusCode::CONFLICT))?;
 
-        if bytes.len() > self.core.groupware.max_file_size {
+        // A large body arrives already stored (see `spool_body`); `bytes` is empty then.
+        let stored_hash = headers.stored_body.as_ref().map(|(hash, _)| hash.clone());
+        let content_len = headers
+            .stored_body
+            .as_ref()
+            .map_or(bytes.len() as u64, |(_, size)| *size);
+        if content_len > self.core.groupware.max_file_size as u64 || content_len > u32::MAX as u64 {
             return Err(DavError::Code(StatusCode::PAYLOAD_TOO_LARGE));
         }
 
@@ -174,7 +180,9 @@ impl FileUpdateRequestHandler for Server {
             let Some(file) = node.inner.file() else {
                 return Err(DavError::Code(StatusCode::METHOD_NOT_ALLOWED));
             };
-            let blob_hash = BlobHash::generate(bytes);
+            let blob_hash = stored_hash
+                .clone()
+                .unwrap_or_else(|| BlobHash::generate(bytes));
             if blob_hash.as_slice() == file.blob_hash.0.as_slice() {
                 return Ok(HttpResponse::new(StatusCode::NO_CONTENT));
             }
@@ -193,11 +201,16 @@ impl FileUpdateRequestHandler for Server {
             }
             // SPDX-SnippetEnd
 
-            // Write blob
-            let (blob_hash, blob_hold) = self
-                .hold_blob(account_id, blob_hash, bytes, 60, &self.core.blob.file)
-                .await
-                .caused_by(trc::location!())?;
+            // Write blob (a stored body is already committed and held)
+            let (blob_hash, blob_hold) = if stored_hash.is_some() {
+                (blob_hash, None)
+            } else {
+                let (hash, hold) = self
+                    .hold_blob(account_id, blob_hash, bytes, 60, &self.core.blob.file)
+                    .await
+                    .caused_by(trc::location!())?;
+                (hash, Some(hold))
+            };
 
             // Build node
             let mut new_node = node.deserialize::<FileNode>().caused_by(trc::location!())?;
@@ -207,7 +220,7 @@ impl FileUpdateRequestHandler for Server {
                     .content_type
                     .filter(|ct| !ct.is_empty() && *ct != "application/octet-stream")
                     .map(|v| v.to_string());
-                new_file.size = bytes.len() as u32;
+                new_file.size = content_len as u32;
             }
             new_node.stamp_update(true);
 
@@ -218,15 +231,17 @@ impl FileUpdateRequestHandler for Server {
             batch
                 .with_collection(Collection::FileNode)
                 .with_document(document_id);
-            blob_hold
-                .release(&mut batch)
-                .custom(
-                    ObjectIndexBuilder::new()
-                        .with_current(node)
-                        .with_changes(new_node)
-                        .with_changed_by(access_token.changed_by()),
-                )
-                .caused_by(trc::location!())?;
+            match blob_hold {
+                Some(blob_hold) => blob_hold.release(&mut batch),
+                None => &mut batch,
+            }
+            .custom(
+                ObjectIndexBuilder::new()
+                    .with_current(node)
+                    .with_changes(new_node)
+                    .with_changed_by(access_token.changed_by()),
+            )
+            .caused_by(trc::location!())?;
             let etag = batch.etag();
             self.commit_batch(batch).await.caused_by(trc::location!())?;
 
@@ -282,17 +297,23 @@ impl FileUpdateRequestHandler for Server {
             }
             // SPDX-SnippetEnd
 
-            // Write blob
-            let (blob_hash, blob_hold) = self
-                .hold_blob(
-                    account_id,
-                    BlobHash::generate(bytes),
-                    bytes,
-                    60,
-                    &self.core.blob.file,
-                )
-                .await
-                .caused_by(trc::location!())?;
+            // Write blob (a stored body is already committed and held)
+            let (blob_hash, blob_hold) = match stored_hash {
+                Some(hash) => (hash, None),
+                None => {
+                    let (hash, hold) = self
+                        .hold_blob(
+                            account_id,
+                            BlobHash::generate(bytes),
+                            bytes,
+                            60,
+                            &self.core.blob.file,
+                        )
+                        .await
+                        .caused_by(trc::location!())?;
+                    (hash, Some(hold))
+                }
+            };
 
             // Build node
             let now = now();
@@ -301,7 +322,7 @@ impl FileUpdateRequestHandler for Server {
                 name,
                 content: FileNodeContent::File(FileProperties {
                     blob_hash,
-                    size: bytes.len() as u32,
+                    size: content_len as u32,
                     media_type: headers.content_type.map(|v| v.to_string()),
                     executable: false,
                 }),
@@ -320,14 +341,16 @@ impl FileUpdateRequestHandler for Server {
             batch
                 .with_collection(Collection::FileNode)
                 .create_document(document_id);
-            blob_hold
-                .release(&mut batch)
-                .custom(
-                    ObjectIndexBuilder::<(), _>::new()
-                        .with_changes(node)
-                        .with_changed_by(access_token.changed_by()),
-                )
-                .caused_by(trc::location!())?;
+            match blob_hold {
+                Some(blob_hold) => blob_hold.release(&mut batch),
+                None => &mut batch,
+            }
+            .custom(
+                ObjectIndexBuilder::<(), _>::new()
+                    .with_changes(node)
+                    .with_changed_by(access_token.changed_by()),
+            )
+            .caused_by(trc::location!())?;
             let lock = self
                 .lock_create(
                     access_token,
