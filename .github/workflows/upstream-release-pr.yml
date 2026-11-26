@@ -1,0 +1,117 @@
+name: Upstream release pull requests
+
+on:
+  schedule:
+    - cron: '23 1 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: upstream-release-pull-requests
+  cancel-in-progress: false
+
+jobs:
+  propose-releases:
+    if: github.repository == 'Kaan88/stalwart'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      UPSTREAM: stalwartlabs/stalwart
+      FIRST_TRACKED_RELEASE: v1.1.1
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Open release PRs and flag merge conflicts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          releases=$(gh api --paginate "repos/$UPSTREAM/releases?per_page=100" \
+            --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name')
+          mapfile -t tags < <(
+            printf '%s\n' "$releases" |
+              grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' |
+              sort -Vu |
+              awk -v first="$FIRST_TRACKED_RELEASE" '
+                { split(substr($0,2), v, "."); split(substr(first,2), f, ".");
+                  if (v[1]+0 > f[1]+0 || (v[1]+0 == f[1]+0 &&
+                      (v[2]+0 > f[2]+0 || (v[2]+0 == f[2]+0 && v[3]+0 >= f[3]+0)))) print }'
+          )
+          base=$(git rev-parse HEAD)
+          for tag in "${tags[@]}"; do
+            git fetch --no-tags "https://github.com/$UPSTREAM.git" \
+              "refs/tags/$tag:refs/upstream-releases/$tag"
+            release=$(git rev-parse "refs/upstream-releases/$tag^{commit}")
+            if git merge-base --is-ancestor "$release" "$base"; then
+              echo "$tag is already in main"
+              continue
+            fi
+
+            branch="upstream-release/$tag"
+            pr=$(gh api -X GET "repos/$GITHUB_REPOSITORY/pulls" \
+              -f state=all -f base=main -f head="Kaan88:$branch" \
+              --jq '.[0] | if . then [.number,.state] | @tsv else empty end')
+            if [[ -z "$pr" ]]; then
+              if [[ -z "$(git ls-remote --heads origin "refs/heads/$branch")" ]]; then
+                # GITHUB_TOKEN cannot create or update anything under
+                # .github/workflows. Push a child of the release whose
+                # workflow files are main's, so the release stays an ancestor
+                # and the PR carries no workflow changes.
+                index=$(mktemp -u)
+                GIT_INDEX_FILE="$index" git read-tree "$release"
+                GIT_INDEX_FILE="$index" git rm -r -q --cached --ignore-unmatch -- .github/workflows
+                git ls-tree -r "$base" -- .github/workflows |
+                  GIT_INDEX_FILE="$index" git update-index --index-info
+                tree=$(GIT_INDEX_FILE="$index" git write-tree)
+                rm -f "$index"
+                head_commit=$(git -c user.name=github-actions[bot] \
+                  -c user.email=41898282+github-actions[bot]@users.noreply.github.com \
+                  commit-tree "$tree" -p "$release" \
+                  -m "Upstream $tag without .github/workflows changes")
+                git push origin "$head_commit:refs/heads/$branch"
+              fi
+              number=$(gh api -X POST "repos/$GITHUB_REPOSITORY/pulls" \
+                -f title="Merge upstream $tag" -f base=main -f head="$branch" \
+                -f body="Upstream release https://github.com/$UPSTREAM/releases/tag/$tag. Merge using a merge commit to preserve upstream tag ancestry." \
+                --jq .number)
+              echo "Opened PR #$number for $tag"
+            else
+              read -r number state <<< "$pr"
+              [[ "$state" == open ]] || continue
+            fi
+
+            head=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$number" --jq .head.sha)
+            git fetch --no-tags origin "$head"
+            report=$(mktemp)
+            if git merge-tree --write-tree --name-only "$base" "$head" > "$report"; then
+              rm "$report"
+              continue
+            else
+              status=$?
+            fi
+            if [[ "$status" != 1 ]]; then
+              cat "$report"
+              exit "$status"
+            fi
+
+            marker='<!-- upstream-release-merge-conflict -->'
+            comments=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$number/comments?per_page=100" \
+              --jq '.[] | select(.user.login == "github-actions[bot]") | .body')
+            if ! grep -Fq -- "$marker" <<< "$comments"; then
+              {
+                printf '%s\n\n' "$marker"
+                printf '@Kaan88 Upstream release %s has merge conflicts with \x60main\x60.\n\n' "$tag"
+                printf '\x60\x60\x60text\n'
+                awk 'NR == 1 {next} NF == 0 {exit} {print}' "$report"
+                printf '\x60\x60\x60\n'
+              } | gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$number/comments" \
+                -F body=@- --jq .html_url
+            fi
+            rm "$report"
+          done
