@@ -8,6 +8,7 @@ use super::{BlobOp, Operation, ValueClass, ValueOp, key::DeserializeBigEndian, n
 use crate::{
     BlobStore, Deserialize, IterateParams, SerializeInfallible, Store, U16_LEN, U32_LEN, U64_LEN,
     ValueKey,
+    dispatch::blob_chunked::CHUNKED_COMMIT_VALUE,
     write::{BatchBuilder, BlobLink, RegistryClass, SetValue, SizedSetValue},
 };
 use registry::{
@@ -207,10 +208,18 @@ impl Store {
 
         state.finalize(BlobHash::default());
 
-        // Delete expired or unlinked blobs
+        // Delete expired or unlinked blobs (chunked blobs first, through their manifest)
+        for hash in &state.delete_chunked {
+            blob_store
+                .delete_chunked_blob(hash.as_ref())
+                .await
+                .caused_by(trc::location!())?;
+        }
         let mut hashes = Vec::with_capacity(BLOB_DELETE_CHUNK.min(state.delete_keys.len()));
         for (_, op) in &state.delete_keys {
-            if let BlobOp::Commit { hash } = op {
+            if let BlobOp::Commit { hash } = op
+                && !state.delete_chunked.contains(hash)
+            {
                 hashes.push(hash.as_ref());
                 if hashes.len() == BLOB_DELETE_CHUNK {
                     blob_store
@@ -381,7 +390,9 @@ impl BlobLinkValue {
 struct BlobPurgeState {
     last_hash: BlobHash,
     last_hash_is_linked: bool,
+    last_hash_is_chunked: bool,
     delete_keys: Vec<(Option<u32>, BlobOp)>,
+    delete_chunked: ahash::AHashSet<BlobHash>,
     delete_registry: Vec<(u32, ObjectId)>,
     now: u64,
     total_deleted: u64,
@@ -393,7 +404,9 @@ impl BlobPurgeState {
         Self {
             last_hash: BlobHash::default(),
             last_hash_is_linked: true, // Avoid deleting non-existing last_hash on first iteration
+            last_hash_is_chunked: false,
             delete_keys: Vec::new(),
+            delete_chunked: Default::default(),
             delete_registry: Vec::new(),
             now: now(),
             total_deleted: 0,
@@ -405,12 +418,16 @@ impl BlobPurgeState {
         if self.last_hash != hash {
             self.finalize(hash);
             self.last_hash_is_linked = false;
+            self.last_hash_is_chunked = false;
         }
     }
 
     pub fn finalize(&mut self, new_hash: BlobHash) {
         if !self.last_hash_is_linked {
             self.total_deleted += 1;
+            if self.last_hash_is_chunked {
+                self.delete_chunked.insert(self.last_hash.clone());
+            }
             self.delete_keys.push((
                 None,
                 BlobOp::Commit {
@@ -431,6 +448,7 @@ impl BlobPurgeState {
         match key.len() {
             BLOB_HASH_LEN => {
                 // Main blob entry
+                self.last_hash_is_chunked = value == [CHUNKED_COMMIT_VALUE];
                 Ok(())
             }
             TEMP_LINK => {

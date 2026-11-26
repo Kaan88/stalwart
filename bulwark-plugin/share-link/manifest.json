@@ -1,0 +1,12 @@
+{
+  "id": "stalwart-share-link",
+  "name": "Public links",
+  "version": "1.0.0",
+  "author": "Kaan88",
+  "description": "Get a public link to a file: anyone with the link can download it, until it expires. Needs a Stalwart server with share links (github.com/Kaan88/stalwart).",
+  "type": "ui-extension",
+  "permissions": ["ui:files", "files:read", "ui:observe", "http:post"],
+  "apiPostPaths": ["/api/sharelink/"],
+  "entrypoint": "index.js",
+  "minAppVersion": "1.15.0"
+}

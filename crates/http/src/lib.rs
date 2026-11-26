@@ -10,6 +10,7 @@ pub mod api;
 pub mod auth;
 pub mod form;
 pub mod request;
+pub mod sharelink;
 mod stream;
 
 use common::{Core, Inner};

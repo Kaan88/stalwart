@@ -6,6 +6,7 @@
 
 pub mod content;
 pub mod index;
+pub mod share_link;
 pub mod storage;
 pub mod symlink;
 

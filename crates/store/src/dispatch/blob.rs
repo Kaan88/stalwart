@@ -6,6 +6,7 @@
 
 use crate::{
     BlobStore, Store,
+    dispatch::blob_chunked::ChunkManifest,
     write::blob_codec::{BlobKeyring, BlobOpts},
 };
 use std::{ops::Range, time::Instant};
@@ -41,6 +42,13 @@ impl BlobStore {
         let Some(data) = result else {
             return Ok(None);
         };
+
+        if let Some(manifest) = ChunkManifest::parse(&data) {
+            return self
+                .get_chunked_range(&manifest, range, keys)
+                .await
+                .map(Some);
+        }
 
         let mut data = keys.decode(key, data)?;
 
@@ -129,7 +137,11 @@ impl BlobStore {
         }
     }
 
-    async fn write_blob(&self, key: &[u8], data: trc::Result<Vec<u8>>) -> trc::Result<()> {
+    pub(crate) async fn write_blob(
+        &self,
+        key: &[u8],
+        data: trc::Result<Vec<u8>>,
+    ) -> trc::Result<()> {
         let data = data?;
         #[cfg(stalwart_tests)]
         {

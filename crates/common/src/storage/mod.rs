@@ -27,6 +27,7 @@ use trc::AddContext;
 pub mod archive;
 pub mod batch;
 pub mod blob;
+pub mod blob_chunked;
 pub mod chunk;
 pub mod create_lock;
 pub mod dav;

@@ -19,6 +19,7 @@ use jmap_proto::{
 };
 use registry::schema::enums::Permission;
 use std::future::Future;
+use store::dispatch::blob_chunked::ChunkedBlob;
 use trc::AddContext;
 use types::{blob::BlobClass, id::Id};
 
@@ -38,6 +39,16 @@ pub trait BlobUpload: Sync + Send {
         account_id: Id,
         content_type: &str,
         data: &[u8],
+        access_token: &AccessToken,
+    ) -> impl Future<Output = trc::Result<UploadResponse>> + Send;
+
+    /// Like `blob_upload`, for a body that `spool_body` already wrote to the
+    /// blob store in chunks.
+    fn blob_upload_chunked(
+        &self,
+        account_id: Id,
+        content_type: &str,
+        blob: ChunkedBlob,
         access_token: &AccessToken,
     ) -> impl Future<Output = trc::Result<UploadResponse>> + Send;
 }
@@ -268,6 +279,59 @@ impl BlobUpload for Server {
                 .caused_by(trc::location!())?,
             c_type: content_type.to_string(),
             size: data.len(),
+        })
+    }
+
+    async fn blob_upload_chunked(
+        &self,
+        account_id: Id,
+        content_type: &str,
+        blob: ChunkedBlob,
+        access_token: &AccessToken,
+    ) -> trc::Result<UploadResponse> {
+        // Limit concurrent uploads
+        let _in_flight = match self.is_upload_allowed(access_token) {
+            Ok(in_flight) => in_flight,
+            Err(err) => {
+                blob.discard(self.blob_store()).await;
+                return Err(err.caused_by(trc::location!()));
+            }
+        };
+
+        let size = blob.manifest.size;
+        let Ok(size_usize) = usize::try_from(size) else {
+            blob.discard(self.blob_store()).await;
+            return Err(trc::LimitEvent::SizeUpload.into_err());
+        };
+
+        // Enforce quota
+        if !access_token.has_permission(Permission::UnlimitedUploads) {
+            let status = self
+                .blob_has_quota(account_id.document_id(), size_usize)
+                .await
+                .caused_by(trc::location!())?;
+            if !status.allowed {
+                blob.discard(self.blob_store()).await;
+                return Err(trc::LimitEvent::BlobQuota
+                    .into_err()
+                    .ctx(trc::Key::Size, self.core.jmap.upload_tmp_quota_size)
+                    .ctx(trc::Key::Total, self.core.jmap.upload_tmp_quota_amount)
+                    .ctx(trc::Key::Expires, status.expires_in));
+            }
+        }
+
+        Ok(UploadResponse {
+            account_id,
+            blob_id: self
+                .commit_chunked_blob(
+                    account_id.document_id(),
+                    blob,
+                    self.core.jmap.upload_tmp_ttl,
+                )
+                .await
+                .caused_by(trc::location!())?,
+            c_type: content_type.to_string(),
+            size: size_usize,
         })
     }
 }
